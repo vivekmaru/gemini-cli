@@ -88,6 +88,7 @@ export interface CliArgs {
   rawOutput: boolean | undefined;
   acceptRawOutputRisk: boolean | undefined;
   isCommand: boolean | undefined;
+  web: boolean | undefined;
 }
 
 export async function parseArguments(
@@ -263,6 +264,10 @@ export async function parseArguments(
         .option('accept-raw-output-risk', {
           type: 'boolean',
           description: 'Suppress the security warning when using --raw-output.',
+        })
+        .option('web', {
+          type: 'boolean',
+          description: 'Start the web interface.',
         }),
     )
     // Register MCP subcommands

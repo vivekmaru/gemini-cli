@@ -97,6 +97,7 @@ import { isAlternateBufferEnabled } from './ui/hooks/useAlternateBuffer.js';
 import { setupTerminalAndTheme } from './utils/terminalTheme.js';
 import { profiler } from './ui/components/DebugProfiler.js';
 import { runDeferredCommand } from './deferred.js';
+import { startWebServer } from './server/webServer.js';
 
 const SLOW_RENDER_MS = 200;
 
@@ -631,6 +632,20 @@ export async function main() {
     }
 
     cliStartupHandle?.end();
+
+    if (argv.web) {
+      await config.initialize();
+      const authType = await validateNonInteractiveAuth(
+        settings.merged.security.auth.selectedType,
+        settings.merged.security.auth.useExternal,
+        config,
+        settings,
+      );
+      await config.refreshAuth(authType);
+      startWebServer(config, settings);
+      return;
+    }
+
     // Render UI, passing necessary config values. Check that there is no command line question.
     if (config.isInteractive()) {
       await startInteractiveUI(
