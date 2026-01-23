@@ -1,0 +1,152 @@
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f9;
+    color: #333;
+    display: flex;
+    justify-content: center;
+    height: 100vh;
+}
+
+.container {
+    width: 100%;
+    max-width: 900px;
+    background-color: #fff;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+
+header {
+    padding: 20px;
+    border-bottom: 1px solid #ddd;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #fff;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 1.2rem;
+}
+
+.status {
+    font-size: 0.8rem;
+    color: #888;
+}
+
+.status.connected {
+    color: green;
+}
+
+.status.disconnected {
+    color: red;
+}
+
+.chat-history {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.message {
+    padding: 10px 15px;
+    border-radius: 10px;
+    max-width: 80%;
+    line-height: 1.5;
+    position: relative;
+    white-space: pre-wrap;
+}
+
+.message.user {
+    align-self: flex-end;
+    background-color: #007bff;
+    color: white;
+}
+
+.message.assistant {
+    align-self: flex-start;
+    background-color: #f1f1f1;
+    color: #333;
+}
+
+.message.tool-use {
+    align-self: center;
+    background-color: #e8f0fe;
+    color: #1a73e8;
+    font-family: monospace;
+    font-size: 0.9rem;
+    border: 1px solid #d2e3fc;
+    width: 100%;
+    max-width: 100%;
+}
+
+.message.tool-result {
+    align-self: center;
+    background-color: #fce8e6;
+    color: #c5221f;
+    font-family: monospace;
+    font-size: 0.9rem;
+    border: 1px solid #fad2cf;
+    width: 100%;
+    max-width: 100%;
+}
+
+.message.error {
+    align-self: center;
+    background-color: #fce8e6;
+    color: #c5221f;
+    border: 1px solid #fad2cf;
+}
+
+.input-area {
+    padding: 20px;
+    border-top: 1px solid #ddd;
+    display: flex;
+    gap: 10px;
+    background-color: #fff;
+}
+
+textarea {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    resize: none;
+    font-family: inherit;
+}
+
+button {
+    padding: 0 20px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:hover {
+    background-color: #0056b3;
+}
+
+button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
+pre {
+    background-color: #eee;
+    padding: 10px;
+    border-radius: 5px;
+    overflow-x: auto;
+}
+
+code {
+    font-family: monospace;
+}
