@@ -32,7 +32,6 @@ import { LoadedSettings } from '../config/settings.js';
 import { handleSlashCommand } from '../nonInteractiveCliCommands.js';
 import { handleAtCommand } from '../ui/hooks/atCommandProcessor.js';
 import { handleMaxTurnsExceededError } from '../utils/errors.js';
-import { ConsolePatcher } from '../ui/utils/ConsolePatcher.js';
 import { isSlashCommand } from '../ui/utils/commandUtils.js';
 import stripAnsi from 'strip-ansi';
 import type { Content, Part } from '@google/genai';
@@ -111,15 +110,6 @@ async function processRequest(
     const prompt_id = Math.random().toString(36).substring(7);
 
     await promptIdContext.run(prompt_id, async () => {
-        const consolePatcher = new ConsolePatcher({
-            stderr: true,
-            debugMode: config.getDebugMode(),
-            onNewMessage: (_msg) => {
-                // We could forward logs to the client if we wanted a debug console there
-            },
-        });
-        consolePatcher.patch();
-
         const abortController = new AbortController();
         const startTime = Date.now();
 
@@ -292,7 +282,6 @@ async function processRequest(
              }
 
         } finally {
-            consolePatcher.cleanup();
             coreEvents.off(CoreEvent.UserFeedback, handleUserFeedback);
         }
     });
