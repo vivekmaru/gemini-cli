@@ -88,6 +88,8 @@ export interface CliArgs {
   rawOutput: boolean | undefined;
   acceptRawOutputRisk: boolean | undefined;
   isCommand: boolean | undefined;
+  web: boolean | undefined;
+  port: number | undefined;
 }
 
 export async function parseArguments(
@@ -263,6 +265,16 @@ export async function parseArguments(
         .option('accept-raw-output-risk', {
           type: 'boolean',
           description: 'Suppress the security warning when using --raw-output.',
+        })
+        .option('web', {
+          type: 'boolean',
+          description:
+            'Run in web mode (starts a web server with terminal emulator)',
+        })
+        .option('port', {
+          type: 'number',
+          description: 'Port for the web server (used with --web)',
+          default: 4040,
         }),
     )
     // Register MCP subcommands

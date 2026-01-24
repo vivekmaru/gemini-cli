@@ -97,6 +97,7 @@ import { isAlternateBufferEnabled } from './ui/hooks/useAlternateBuffer.js';
 import { setupTerminalAndTheme } from './utils/terminalTheme.js';
 import { profiler } from './ui/components/DebugProfiler.js';
 import { runDeferredCommand } from './deferred.js';
+import { startWebServer } from './server/webServer.js';
 
 const SLOW_RENDER_MS = 200;
 
@@ -323,6 +324,27 @@ export async function main() {
   const parseArgsHandle = startupProfiler.start('parse_arguments');
   const argv = await parseArguments(settings.merged);
   parseArgsHandle?.end();
+
+  if (argv.web) {
+    const port = argv.port || 4040;
+
+    // Filter out --web and --port from args
+    const argsToPass: string[] = [];
+    const rawArgs = process.argv.slice(1);
+    for (let i = 0; i < rawArgs.length; i++) {
+      const arg = rawArgs[i];
+      if (arg === '--web') continue;
+      if (arg === '--port') {
+        i++; // skip next arg (value)
+        continue;
+      }
+      if (arg.startsWith('--port=')) continue;
+      argsToPass.push(arg);
+    }
+
+    await startWebServer(port, process.argv[0], argsToPass);
+    return;
+  }
 
   if (argv.startupMessages) {
     argv.startupMessages.forEach((msg) => {
