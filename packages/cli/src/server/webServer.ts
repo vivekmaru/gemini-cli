@@ -87,10 +87,12 @@ export async function startWebServer(port: number, cmd: string, args: string[]) 
   });
 
   io.on('connection', async (socket) => {
-
     const ptyInfo = await getPty();
     if (!ptyInfo) {
-      socket.emit('output', 'Error: node-pty not found. Cannot start terminal session.\\r\\n');
+      socket.emit(
+        'output',
+        'Error: node-pty not found. Cannot start terminal session.\\r\\n',
+      );
       return;
     }
 
@@ -106,12 +108,16 @@ export async function startWebServer(port: number, cmd: string, args: string[]) 
       socket.emit('output', data);
     });
 
-    socket.on('input', (data) => {
+    socket.on('input', (data: string) => {
       ptyProcess.write(data);
     });
 
-    socket.on('resize', (size) => {
-      if (size && typeof size.cols === 'number' && typeof size.rows === 'number') {
+    socket.on('resize', (size: { cols: number; rows: number }) => {
+      if (
+        size &&
+        typeof size.cols === 'number' &&
+        typeof size.rows === 'number'
+      ) {
         ptyProcess.resize(size.cols, size.rows);
       }
     });
