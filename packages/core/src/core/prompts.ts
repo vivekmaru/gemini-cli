@@ -465,8 +465,23 @@ Your core function is efficient and safe assistance. Balance extreme conciseness
       ? `\n\n---\n\n${userMemory.trim()}`
       : '';
 
+  let pinnedContextSuffix = '';
+  const pinnedFiles = config.getPinnedFiles();
+  if (pinnedFiles.length > 0) {
+    pinnedContextSuffix = '\n\n# Pinned Context\n';
+    for (const pinnedFile of pinnedFiles) {
+      try {
+        const content = fs.readFileSync(pinnedFile, 'utf8');
+        pinnedContextSuffix += `\nFile: ${pinnedFile}\n\`\`\`\n${content}\n\`\`\`\n`;
+      } catch (err) {
+        debugLogger.warn(`Failed to read pinned file: ${pinnedFile}`, err);
+        pinnedContextSuffix += `\nFile: ${pinnedFile} (Error reading file)\n`;
+      }
+    }
+  }
+
   // Append approval mode prompt at the very end to ensure it's not overridden
-  return `${basePrompt}${memorySuffix}${approvalModePrompt}`;
+  return `${basePrompt}${memorySuffix}${pinnedContextSuffix}${approvalModePrompt}`;
 }
 
 /**

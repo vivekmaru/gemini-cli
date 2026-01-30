@@ -556,6 +556,7 @@ export class Config {
   private remoteAdminSettings: FetchAdminControlsResponse | undefined;
   private latestApiRequest: GenerateContentParameters | undefined;
   private lastModeSwitchTime: number = Date.now();
+  private readonly pinnedFiles: Set<string> = new Set();
 
   constructor(params: ConfigParameters) {
     this.sessionId = params.sessionId;
@@ -2125,6 +2126,22 @@ export class Config {
     if (this.mcpClientManager) {
       await this.mcpClientManager.stop();
     }
+  }
+
+  addPinnedFile(file: string): void {
+    this.pinnedFiles.add(file);
+  }
+
+  removePinnedFile(file: string): void {
+    this.pinnedFiles.delete(file);
+  }
+
+  getPinnedFiles(): string[] {
+    return Array.from(this.pinnedFiles);
+  }
+
+  clearPinnedFiles(): void {
+    this.pinnedFiles.clear();
   }
 }
 // Export model constants for use in CLI
