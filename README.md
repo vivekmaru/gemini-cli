@@ -112,6 +112,11 @@ npm install -g @google/gemini-cli@nightly
   information
 - Conversation checkpointing to save and resume complex sessions
 - Custom context files (GEMINI.md) to tailor behavior for your projects
+- **Pinned Context**: Use `/context add <file>` to pin critical files to the
+  agent's context, ensuring they are always considered during the conversation.
+- **Autonomous Test Fixing**: Ask the agent to "fix the tests" and it will use a
+  specialized `TestFixerAgent` to iteratively run tests, analyze failures, and
+  apply fixes.
 
 ### GitHub Integration
 

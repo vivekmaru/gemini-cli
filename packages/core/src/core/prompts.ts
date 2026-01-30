@@ -471,6 +471,7 @@ Your core function is efficient and safe assistance. Balance extreme conciseness
     pinnedContextSuffix = '\n\n# Pinned Context\n';
     for (const pinnedFile of pinnedFiles) {
       try {
+        // eslint-disable-next-line no-restricted-properties
         const content = fs.readFileSync(pinnedFile, 'utf8');
         pinnedContextSuffix += `\nFile: ${pinnedFile}\n\`\`\`\n${content}\n\`\`\`\n`;
       } catch (err) {
