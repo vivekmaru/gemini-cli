@@ -12,6 +12,7 @@ import { loadAgentsFromDirectory } from './agentLoader.js';
 import { CodebaseInvestigatorAgent } from './codebase-investigator.js';
 import { CliHelpAgent } from './cli-help-agent.js';
 import { GeneralistAgent } from './generalist-agent.js';
+import { TestFixerAgent } from './test-fixer-agent.js';
 import { A2AClientManager } from './a2a-client-manager.js';
 import { ADCHandler } from './remote-invocation.js';
 import { type z } from 'zod';
@@ -145,6 +146,7 @@ export class AgentRegistry {
     this.registerLocalAgent(CodebaseInvestigatorAgent(this.config));
     this.registerLocalAgent(CliHelpAgent(this.config));
     this.registerLocalAgent(GeneralistAgent(this.config));
+    this.registerLocalAgent(TestFixerAgent(this.config));
   }
 
   private async refreshAgents(): Promise<void> {
