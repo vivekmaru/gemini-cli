@@ -4,10 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { planCommand } from './planCommand.js';
 import { createMockCommandContext } from '../../test-utils/mockCommandContext.js';
-import * as fs from 'fs';
+import type { CommandContext } from './types.js';
+import * as fs from 'node:fs';
 
 vi.mock('fs', () => ({
   writeFileSync: vi.fn(),
@@ -16,7 +17,8 @@ vi.mock('fs', () => ({
 const mockSendMessageStream = vi.fn();
 
 vi.mock('@google/gemini-cli-core', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@google/gemini-cli-core')>();
+  const actual =
+    await importOriginal<typeof import('@google/gemini-cli-core')>();
   return {
     ...actual,
     GeminiChat: vi.fn().mockImplementation(() => ({
@@ -26,14 +28,15 @@ vi.mock('@google/gemini-cli-core', async (importOriginal) => {
 });
 
 describe('planCommand', () => {
-  let mockContext: any;
+  let mockContext: CommandContext;
 
   beforeEach(() => {
     mockContext = createMockCommandContext({
-        services: {
-            config: {},
-        }
-    } as any);
+      services: {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        config: {} as any,
+      },
+    });
     vi.clearAllMocks();
   });
 
@@ -58,23 +61,37 @@ describe('planCommand', () => {
     // Sequence of mocked responses:
     // 1. Generate Personas
     mockSendMessageStream.mockReturnValueOnce(
-      createStreamResponse('[{"name": "AgentA", "description": "DescA"}, {"name": "AgentB", "description": "DescB"}]')
+      createStreamResponse(
+        '[{"name": "AgentA", "description": "DescA"}, {"name": "AgentB", "description": "DescB"}]',
+      ),
     );
 
     // 2. Proposal Round (Agent A)
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Plan A Content'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('Plan A Content'),
+    );
     // 3. Proposal Round (Agent B)
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Plan B Content'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('Plan B Content'),
+    );
 
     // 4. Review Round (Agent A)
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Refined Plan A Content'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('Refined Plan A Content'),
+    );
     // 5. Review Round (Agent B)
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Refined Plan B Content'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('Refined Plan B Content'),
+    );
 
     // 6. Vote (Agent A)
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('{"votedFor": "AgentA", "reason": "Self vote"}'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('{"votedFor": "AgentA", "reason": "Self vote"}'),
+    );
     // 7. Vote (Agent B)
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('{"votedFor": "AgentA", "reason": "B likes A"}'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('{"votedFor": "AgentA", "reason": "B likes A"}'),
+    );
 
     // Call command: /plan "Fix bug" --agents 2 --rounds 1
     if (!planCommand.action) throw new Error('No action');
@@ -103,7 +120,9 @@ describe('planCommand', () => {
   it('should handle ties', async () => {
     // 1. Personas
     mockSendMessageStream.mockReturnValueOnce(
-      createStreamResponse('[{"name": "AgentA", "description": "DescA"}, {"name": "AgentB", "description": "DescB"}]')
+      createStreamResponse(
+        '[{"name": "AgentA", "description": "DescA"}, {"name": "AgentB", "description": "DescB"}]',
+      ),
     );
 
     // 2. Proposals
@@ -111,10 +130,15 @@ describe('planCommand', () => {
     mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Plan B'));
 
     // 3. Votes (Split vote)
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('{"votedFor": "AgentA", "reason": "Vote A"}'));
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('{"votedFor": "AgentB", "reason": "Vote B"}'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('{"votedFor": "AgentA", "reason": "Vote A"}'),
+    );
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('{"votedFor": "AgentB", "reason": "Vote B"}'),
+    );
 
     // Run with 0 rounds to skip review phase
+    if (!planCommand.action) throw new Error('No action');
     await planCommand.action(mockContext, '"Tie test" --agents 2 --rounds 0');
 
     expect(fs.writeFileSync).toHaveBeenCalledTimes(2);
@@ -130,16 +154,23 @@ describe('planCommand', () => {
 
   it('should fail gracefully if personas cannot be generated', async () => {
     // 1. Personas (Invalid JSON)
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Invalid JSON'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('Invalid JSON'),
+    );
 
     // 2. Proposals (Fallback agents Agent_1, Agent_2)
     mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Plan 1'));
     mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Plan 2'));
 
     // 3. Votes
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('{"votedFor": "Agent_1", "reason": "Vote 1"}'));
-    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('{"votedFor": "Agent_1", "reason": "Vote 1"}'));
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('{"votedFor": "Agent_1", "reason": "Vote 1"}'),
+    );
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('{"votedFor": "Agent_1", "reason": "Vote 1"}'),
+    );
 
+    if (!planCommand.action) throw new Error('No action');
     await planCommand.action(mockContext, '"Fail test" --agents 2 --rounds 0');
 
     expect(fs.writeFileSync).toHaveBeenCalledTimes(2);
