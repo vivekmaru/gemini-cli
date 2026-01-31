@@ -112,6 +112,8 @@ npm install -g @google/gemini-cli@nightly
   information
 - Conversation checkpointing to save and resume complex sessions
 - Custom context files (GEMINI.md) to tailor behavior for your projects
+- **Planning Mode**: Spawn multiple AI agents to brainstorm, debate, and vote on
+  the best plan for complex problems using `/plan`.
 
 ### GitHub Integration
 
@@ -256,6 +258,13 @@ git clone https://github.com/google-gemini/gemini-cli
 cd gemini-cli
 gemini
 > Give me a summary of all of the changes that went in yesterday
+```
+
+#### Run a multi-agent planning session
+
+```bash
+gemini
+> /plan "How should I refactor the auth system?" --agents 3 --rounds 2
 ```
 
 ## 📚 Documentation
