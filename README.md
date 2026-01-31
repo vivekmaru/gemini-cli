@@ -282,6 +282,8 @@ gemini
 - [**Checkpointing**](./docs/cli/checkpointing.md) - Save and resume
   conversations.
 - [**Token Caching**](./docs/cli/token-caching.md) - Optimize token usage.
+- [**Web UI**](./packages/web-ui/README.md) - A browser-based interface for
+  Gemini CLI with visual diffs and worktree isolation.
 
 ### Tools & Extensions
 
