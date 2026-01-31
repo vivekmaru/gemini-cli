@@ -71,7 +71,7 @@
     }
   },
   "bin": {
-    "gemini": "bundle/gemini.js"
+    "modgemini": "bundle/gemini.js"
   },
   "files": [
     "bundle/",
