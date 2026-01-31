@@ -72,6 +72,30 @@ conda activate gemini_env
 npm install -g @google/gemini-cli
 ```
 
+#### Running a Local Modification
+
+If you have cloned the repository and made changes, you can run your modified version without overwriting the global installation by using a shell alias.
+
+1.  **Build the project:**
+    ```bash
+    npm install
+    npm run bundle
+    ```
+
+2.  **Create an alias (e.g., `modgemini`):**
+
+    Run the following command from the repository root to add the alias to your shell configuration (replace `~/.zshrc` with `~/.bashrc` if using Bash):
+
+    ```bash
+    echo "alias modgemini='node $(pwd)/bundle/gemini.js'" >> ~/.zshrc
+    source ~/.zshrc
+    ```
+
+3.  **Run your modified CLI:**
+    ```bash
+    modgemini
+    ```
+
 ## Release Cadence and Tags
 
 See [Releases](./docs/releases.md) for more details.
