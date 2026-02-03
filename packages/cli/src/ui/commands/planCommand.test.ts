@@ -24,6 +24,27 @@ vi.mock('@google/gemini-cli-core', async (importOriginal) => {
     GeminiChat: vi.fn().mockImplementation(() => ({
       sendMessageStream: mockSendMessageStream,
     })),
+    ReadFileTool: class {
+      static Name = 'read_file';
+    },
+    LSTool: class {
+      static Name = 'list_directory';
+    },
+    RipGrepTool: class {
+      static Name = 'search_file_content';
+    },
+    GlobTool: class {
+      static Name = 'glob';
+    },
+    MessageBus: vi.fn().mockImplementation(() => ({
+      on: vi.fn(),
+      subscribe: vi.fn(),
+    })),
+    PolicyEngine: vi.fn().mockImplementation(() => ({
+      addRule: vi.fn(),
+    })),
+    PolicyDecision: actual.PolicyDecision,
+    MessageBusType: actual.MessageBusType,
   };
 });
 
@@ -33,11 +54,18 @@ describe('planCommand', () => {
   beforeEach(() => {
     mockContext = createMockCommandContext({
       services: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        config: {} as any,
+        config: {
+          getActiveModel: vi.fn().mockReturnValue('gemini-pro'),
+        } as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       },
     });
     vi.clearAllMocks();
+    // Stub setTimeout to resolve immediately to skip delays in tests
+    vi.stubGlobal('setTimeout', (cb: () => void) => cb());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   function createStreamResponse(text: string) {
@@ -178,5 +206,57 @@ describe('planCommand', () => {
     // Check if fallback personas were used
     expect(transcriptCall[1]).toContain('Agent_1');
     expect(transcriptCall[1]).toContain('Agent_2');
+  });
+
+  it('should parse voting response with markdown code blocks', async () => {
+    // 1. Personas
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('[{"name": "AgentA", "description": "DescA"}]'),
+    );
+
+    // 2. Proposal
+    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Plan A'));
+
+    // 3. Vote with markdown
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse(
+        'Here is my vote:\n```json\n{"votedFor": "AgentA", "reason": "Good"}\n```\n',
+      ),
+    );
+
+    if (!planCommand.action) throw new Error('No action');
+    await planCommand.action(
+      mockContext,
+      '"Markdown test" --agents 1 --rounds 0',
+    );
+
+    const transcriptCall = vi.mocked(fs.writeFileSync).mock.calls[0];
+    expect(transcriptCall[1]).toContain('Winner: **AgentA**');
+  });
+
+  it('should parse voting response embedded in text', async () => {
+    // 1. Personas
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse('[{"name": "AgentA", "description": "DescA"}]'),
+    );
+
+    // 2. Proposal
+    mockSendMessageStream.mockReturnValueOnce(createStreamResponse('Plan A'));
+
+    // 3. Vote with text
+    mockSendMessageStream.mockReturnValueOnce(
+      createStreamResponse(
+        'I choose this one: {"votedFor": "AgentA", "reason": "Good"}. It is the best.',
+      ),
+    );
+
+    if (!planCommand.action) throw new Error('No action');
+    await planCommand.action(
+      mockContext,
+      '"Embedded test" --agents 1 --rounds 0',
+    );
+
+    const transcriptCall = vi.mocked(fs.writeFileSync).mock.calls[0];
+    expect(transcriptCall[1]).toContain('Winner: **AgentA**');
   });
 });

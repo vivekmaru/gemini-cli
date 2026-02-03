@@ -7,6 +7,15 @@
 import {
   GeminiChat,
   type Config,
+  ReadFileTool,
+  LSTool,
+  RipGrepTool,
+  GlobTool,
+  MessageBus,
+  PolicyEngine,
+  PolicyDecision,
+  MessageBusType,
+  type ToolConfirmationRequest,
 } from '@google/gemini-cli-core';
 import type {
   CommandContext,
@@ -15,8 +24,8 @@ import type {
 } from './types.js';
 import { CommandKind } from './types.js';
 import { MessageType } from '../types.js';
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 interface Persona {
   name: string;
@@ -34,22 +43,78 @@ interface Vote {
   reason: string;
 }
 
+type LogCallback = (message: string) => void;
+
 class PlanAgent {
   private chat: GeminiChat;
-  public readonly name: string;
-  public readonly description: string;
+  private config: Config;
+  readonly name: string;
+  readonly description: string;
+  private messageBus: MessageBus;
+  private policyEngine: PolicyEngine;
 
   constructor(
     name: string,
     description: string,
     config: Config,
+    log: LogCallback,
   ) {
     this.name = name;
     this.description = description;
+    this.config = config;
+
+    // Create a dedicated PolicyEngine and MessageBus for this agent
+    // This ensures the agent can use read-only tools without user interruption
+    this.policyEngine = new PolicyEngine({
+      defaultDecision: PolicyDecision.DENY, // Deny by default for safety
+    });
+
+    // Allow read-only tools
+    this.policyEngine.addRule({
+      toolName: ReadFileTool.Name,
+      decision: PolicyDecision.ALLOW,
+      priority: 100,
+    });
+    this.policyEngine.addRule({
+      toolName: LSTool.Name,
+      decision: PolicyDecision.ALLOW,
+      priority: 100,
+    });
+    this.policyEngine.addRule({
+      toolName: RipGrepTool.Name,
+      decision: PolicyDecision.ALLOW,
+      priority: 100,
+    });
+    this.policyEngine.addRule({
+      toolName: GlobTool.Name,
+      decision: PolicyDecision.ALLOW,
+      priority: 100,
+    });
+
+    this.messageBus = new MessageBus(this.policyEngine);
+
+    // Log tool usage
+    this.messageBus.on(
+      MessageBusType.TOOL_CONFIRMATION_REQUEST,
+      (msg: ToolConfirmationRequest) => {
+        if (msg.type === MessageBusType.TOOL_CONFIRMATION_REQUEST) {
+          log(`[${this.name}] is using tool: ${msg.toolCall.name}`);
+        }
+      },
+    );
+
+    // Initialize Read-Only Tools
+    const tools = [
+      new ReadFileTool(config, this.messageBus),
+      new LSTool(config, this.messageBus),
+      new RipGrepTool(config, this.messageBus),
+      new GlobTool(config, this.messageBus),
+    ];
+
     this.chat = new GeminiChat(
       config,
-      `You are ${name}. ${description}\n\nYou are participating in a planning session with other agents.`,
-      [], // No tools for now, purely cognitive/planning
+      `You are ${name}. ${description}\n\nYou are participating in a planning session with other agents. You have access to read-only tools to explore the codebase. Use them to understand the context before proposing a plan.`,
+      [{ functionDeclarations: tools.map((t) => t.schema) }],
       [],
     );
   }
@@ -59,7 +124,7 @@ class PlanAgent {
     const promptId = Math.random().toString(36).substring(7);
 
     const responseStream = await this.chat.sendMessageStream(
-      { model: 'inherit' }, // Use default model
+      { model: this.config.getActiveModel() }, // Use active model
       [{ text: prompt }],
       promptId,
       controller.signal,
@@ -67,7 +132,10 @@ class PlanAgent {
 
     let fullText = '';
     for await (const chunk of responseStream) {
-      if (chunk.type === 'chunk' && chunk.value.candidates?.[0]?.content?.parts?.[0]?.text) {
+      if (
+        chunk.type === 'chunk' &&
+        chunk.value.candidates?.[0]?.content?.parts?.[0]?.text
+      ) {
         fullText += chunk.value.candidates[0].content.parts[0].text;
       }
     }
@@ -75,6 +143,45 @@ class PlanAgent {
   }
 }
 
+function safeParseJSON<T>(text: string): T | null {
+  // 1. Try parsing raw text
+  try {
+    return JSON.parse(text);
+  } catch (_e) {
+    // continue
+  }
+
+  // 2. Try parsing from code blocks
+  const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (match) {
+    try {
+      return JSON.parse(match[1]);
+    } catch (_e) {
+      // continue
+    }
+  }
+
+  // 3. Try finding the outermost JSON object or array
+  const firstOpen = text.search(/[{[]/);
+  if (firstOpen !== -1) {
+    // Find the last matching closing brace/bracket
+    // We can't use simple regex for nested structures easily,
+    // but finding the last occurrence of the corresponding closer is a good heuristic
+    const isArray = text[firstOpen] === '[';
+    const closer = isArray ? ']' : '}';
+    const lastClose = text.lastIndexOf(closer);
+
+    if (lastClose !== -1 && lastClose > firstOpen) {
+      try {
+        return JSON.parse(text.substring(firstOpen, lastClose + 1));
+      } catch (_e) {
+        // continue
+      }
+    }
+  }
+
+  return null;
+}
 async function generatePersonas(
   query: string,
   count: number,
@@ -100,7 +207,7 @@ async function generatePersonas(
   const promptId = Math.random().toString(36).substring(7);
 
   const responseStream = await chat.sendMessageStream(
-    { model: 'inherit' },
+    { model: config.getActiveModel() },
     [{ text: prompt }],
     promptId,
     controller.signal,
@@ -108,22 +215,24 @@ async function generatePersonas(
 
   let fullText = '';
   for await (const chunk of responseStream) {
-    if (chunk.type === 'chunk' && chunk.value.candidates?.[0]?.content?.parts?.[0]?.text) {
+    if (
+      chunk.type === 'chunk' &&
+      chunk.value.candidates?.[0]?.content?.parts?.[0]?.text
+    ) {
       fullText += chunk.value.candidates[0].content.parts[0].text;
     }
   }
 
-  try {
-    // Clean up potential markdown code blocks
-    const cleaned = fullText.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleaned) as Persona[];
-  } catch (e) {
-    // Fallback if parsing fails - create generic personas
-    return Array.from({ length: count }, (_, i) => ({
-        name: `Agent_${i+1}`,
-        description: `An expert agent focused on aspect ${i+1} of the problem.`
-    }));
+  const parsed = safeParseJSON<Persona[]>(fullText);
+  if (parsed && Array.isArray(parsed)) {
+    return parsed;
   }
+
+  // Fallback if parsing fails - create generic personas
+  return Array.from({ length: count }, (_, i) => ({
+    name: `Agent_${i + 1}`,
+    description: `An expert agent focused on aspect ${i + 1} of the problem.`,
+  }));
 }
 
 export const planCommand: SlashCommand = {
@@ -169,7 +278,10 @@ export const planCommand: SlashCommand = {
 
     query = query.trim();
     // Remove quotes if present
-    if ((query.startsWith('"') && query.endsWith('"')) || (query.startsWith("'") && query.endsWith("'"))) {
+    if (
+      (query.startsWith('"') && query.endsWith('"')) ||
+      (query.startsWith("'") && query.endsWith("'"))
+    ) {
       query = query.slice(1, -1);
     }
 
@@ -177,7 +289,8 @@ export const planCommand: SlashCommand = {
       return {
         type: 'message',
         messageType: 'error',
-        content: 'Please provide a problem statement. Usage: /plan "How to fix bug X" [--agents 3] [--rounds 1]',
+        content:
+          'Please provide a problem statement. Usage: /plan "How to fix bug X" [--agents 3] [--rounds 1]',
       };
     }
 
@@ -185,53 +298,93 @@ export const planCommand: SlashCommand = {
     agentCount = Math.max(1, Math.min(6, agentCount));
     rounds = Math.max(0, Math.min(5, rounds));
 
-    context.ui.addItem({
-      type: MessageType.INFO,
-      text: `Starting planning session for: "${query}"\nAgents: ${agentCount}, Rounds: ${rounds}`,
-    }, Date.now());
+    context.ui.addItem(
+      {
+        type: MessageType.INFO,
+        text: `Starting planning session for: "${query}"\nAgents: ${agentCount}, Rounds: ${rounds}`,
+      },
+      Date.now(),
+    );
 
     let transcript = `# Planning Session Transcript\n\n## Problem Statement\n${query}\n\n`;
 
     try {
       // 1. Generate Personas
-      context.ui.addItem({ type: MessageType.INFO, text: 'Generating personas...' }, Date.now());
+      context.ui.addItem(
+        { type: MessageType.INFO, text: 'Generating personas...' },
+        Date.now(),
+      );
       const personas = await generatePersonas(query, agentCount, config);
 
-      const personaText = personas.map(p => `- **${p.name}**: ${p.description}`).join('\n');
+      const personaText = personas
+        .map((p) => `- **${p.name}**: ${p.description}`)
+        .join('\n');
       transcript += `## Personas\n${personaText}\n\n`;
-      context.ui.addItem({ type: MessageType.INFO, text: `Personas created:\n${personaText}` }, Date.now());
+      context.ui.addItem(
+        { type: MessageType.INFO, text: `Personas created:\n${personaText}` },
+        Date.now(),
+      );
 
       // 2. Instantiate Agents
-      const agents = personas.map(p => new PlanAgent(p.name, p.description, config));
+      const agents = personas.map(
+        (p) =>
+          new PlanAgent(p.name, p.description, config, (msg: string) =>
+            context.ui.addItem(
+              { type: MessageType.INFO, text: msg },
+              Date.now(),
+            ),
+          ),
+      );
 
       // 3. Proposal Round
-      context.ui.addItem({ type: MessageType.INFO, text: 'Phase 1: Initial Proposals' }, Date.now());
+      context.ui.addItem(
+        { type: MessageType.INFO, text: 'Phase 1: Initial Proposals' },
+        Date.now(),
+      );
       transcript += `## Phase 1: Initial Proposals\n\n`;
 
       let currentPlans: Plan[] = [];
 
-      // Run in parallel
-      const proposalPromises = agents.map(async (agent) => {
+      // Run sequentially to avoid rate limits
+      for (const agent of agents) {
         const prompt = `The user has the following problem: "${query}".\n\nBased on your expertise, propose a detailed plan to solve this. Structure it clearly.`;
         const planContent = await agent.generate(prompt);
-        return { agentName: agent.name, content: planContent };
-      });
+        currentPlans.push({ agentName: agent.name, content: planContent });
 
-      currentPlans = await Promise.all(proposalPromises);
+        // Brief pause between agents
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
 
       for (const plan of currentPlans) {
         transcript += `### ${plan.agentName}'s Proposal\n${plan.content}\n\n`;
-        context.ui.addItem({ type: MessageType.INFO, text: `**${plan.agentName}** has proposed a plan.` }, Date.now());
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `**${plan.agentName}** has proposed a plan.`,
+          },
+          Date.now(),
+        );
       }
 
       // 4. Review Rounds
       for (let r = 1; r <= rounds; r++) {
-        context.ui.addItem({ type: MessageType.INFO, text: `Phase 2: Review Round ${r}/${rounds}` }, Date.now());
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `Phase 2: Review Round ${r}/${rounds}`,
+          },
+          Date.now(),
+        );
         transcript += `## Phase 2: Review Round ${r}\n\n`;
 
-        const allPlansText = currentPlans.map(p => `Plan from ${p.agentName}:\n${p.content}\n---`).join('\n');
+        const allPlansText = currentPlans
+          .map((p) => `Plan from ${p.agentName}:\n${p.content}\n---`)
+          .join('\n');
 
-        const reviewPromises = agents.map(async (agent) => {
+        const nextRoundPlans: Plan[] = [];
+
+        // Run sequentially
+        for (const agent of agents) {
           const prompt = `
             Here are the current plans proposed by the team:
             ${allPlansText}
@@ -240,24 +393,44 @@ export const planCommand: SlashCommand = {
             Make your new plan comprehensive.
           `;
           const refinedContent = await agent.generate(prompt);
-          return { agentName: agent.name, content: refinedContent };
-        });
+          nextRoundPlans.push({
+            agentName: agent.name,
+            content: refinedContent,
+          });
 
-        currentPlans = await Promise.all(reviewPromises);
+          // Brief pause
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+
+        currentPlans = nextRoundPlans;
 
         for (const plan of currentPlans) {
           transcript += `### ${plan.agentName}'s Refined Plan (Round ${r})\n${plan.content}\n\n`;
-          context.ui.addItem({ type: MessageType.INFO, text: `**${plan.agentName}** has refined their plan.` }, Date.now());
+          context.ui.addItem(
+            {
+              type: MessageType.INFO,
+              text: `**${plan.agentName}** has refined their plan.`,
+            },
+            Date.now(),
+          );
         }
       }
 
       // 5. Voting
-      context.ui.addItem({ type: MessageType.INFO, text: 'Phase 3: Voting' }, Date.now());
+      context.ui.addItem(
+        { type: MessageType.INFO, text: 'Phase 3: Voting' },
+        Date.now(),
+      );
       transcript += `## Phase 3: Voting\n\n`;
 
-      const finalPlansText = currentPlans.map(p => `Plan from ${p.agentName}:\n${p.content}\n---`).join('\n');
+      const finalPlansText = currentPlans
+        .map((p) => `Plan from ${p.agentName}:\n${p.content}\n---`)
+        .join('\n');
 
-      const votePromises = agents.map(async (agent) => {
+      const votes: Vote[] = [];
+
+      // Run sequentially
+      for (const agent of agents) {
         const prompt = `
           The discussion is over. Here are the final plans:
           ${finalPlansText}
@@ -269,26 +442,48 @@ export const planCommand: SlashCommand = {
           Example: {"votedFor": "SecurityExpert", "reason": "It addresses the root cause..."}
         `;
         const voteResponse = await agent.generate(prompt);
-        try {
-            const cleaned = voteResponse.replace(/```json/g, '').replace(/```/g, '').trim();
-            const voteData = JSON.parse(cleaned);
-            return { voterName: agent.name, votedFor: voteData.votedFor, reason: voteData.reason } as Vote;
-        } catch (e) {
-            return { voterName: agent.name, votedFor: "Unknown", reason: "Failed to parse vote" } as Vote;
-        }
-      });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const voteData = safeParseJSON<any>(voteResponse);
 
-      const votes = await Promise.all(votePromises);
+        let vote: Vote;
+        if (
+          voteData &&
+          typeof voteData.votedFor === 'string' &&
+          typeof voteData.reason === 'string'
+        ) {
+          vote = {
+            voterName: agent.name,
+            votedFor: voteData.votedFor,
+            reason: voteData.reason,
+          } as Vote;
+        } else {
+          vote = {
+            voterName: agent.name,
+            votedFor: 'Unknown',
+            reason: 'Failed to parse vote',
+          } as Vote;
+        }
+        votes.push(vote);
+
+        // Brief pause
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
       const voteCounts: Record<string, number> = {};
 
       for (const vote of votes) {
         transcript += `- **${vote.voterName}** voted for **${vote.votedFor}**: "${vote.reason}"\n`;
-        context.ui.addItem({ type: MessageType.INFO, text: `**${vote.voterName}** voted for **${vote.votedFor}**.` }, Date.now());
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `**${vote.voterName}** voted for **${vote.votedFor}**.`,
+          },
+          Date.now(),
+        );
 
         if (voteCounts[vote.votedFor]) {
-            voteCounts[vote.votedFor]++;
+          voteCounts[vote.votedFor]++;
         } else {
-            voteCounts[vote.votedFor] = 1;
+          voteCounts[vote.votedFor] = 1;
         }
       }
 
@@ -297,53 +492,70 @@ export const planCommand: SlashCommand = {
       let winners: string[] = [];
       for (const [agent, count] of Object.entries(voteCounts)) {
         if (count > maxVotes) {
-            maxVotes = count;
-            winners = [agent];
+          maxVotes = count;
+          winners = [agent];
         } else if (count === maxVotes) {
-            winners.push(agent);
+          winners.push(agent);
         }
       }
 
       transcript += `\n## Result\n`;
-      let finalWinnerName = "";
+      let finalWinnerName = '';
 
       if (winners.length === 1) {
         finalWinnerName = winners[0];
         transcript += `Winner: **${finalWinnerName}** with ${maxVotes} votes.\n`;
-        context.ui.addItem({ type: MessageType.INFO, text: `Winner: ${finalWinnerName}` }, Date.now());
+        context.ui.addItem(
+          { type: MessageType.INFO, text: `Winner: ${finalWinnerName}` },
+          Date.now(),
+        );
       } else {
         // Tie
         transcript += `Tie between: ${winners.join(', ')} with ${maxVotes} votes each.\n`;
-        context.ui.addItem({ type: MessageType.WARNING, text: `Tie between: ${winners.join(', ')}. Please review the winning plans.` }, Date.now());
-        finalWinnerName = "TIE: " + winners.join(" & ");
+        context.ui.addItem(
+          {
+            type: MessageType.WARNING,
+            text: `Tie between: ${winners.join(', ')}. Please review the winning plans.`,
+          },
+          Date.now(),
+        );
+        finalWinnerName = 'TIE: ' + winners.join(' & ');
       }
 
       // 6. Write Output
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const transcriptFile = path.join(process.cwd(), `transcript-${timestamp}.md`);
-      const winningPlanFile = path.join(process.cwd(), `winning_plan-${timestamp}.md`);
+      const transcriptFile = path.join(
+        process.cwd(),
+        `transcript-${timestamp}.md`,
+      );
+      const winningPlanFile = path.join(
+        process.cwd(),
+        `winning_plan-${timestamp}.md`,
+      );
 
       fs.writeFileSync(transcriptFile, transcript);
 
       let winningContent = `# Winning Plan(s)\n\nProblem: ${query}\n\n`;
       if (winners.length === 1) {
-        const plan = currentPlans.find(p => p.agentName === winners[0]);
+        const plan = currentPlans.find((p) => p.agentName === winners[0]);
         winningContent += `## Author: ${plan?.agentName}\n\n${plan?.content}`;
       } else {
         winningContent += `## TIE between ${winners.join(', ')}\n\n`;
         for (const winner of winners) {
-            const plan = currentPlans.find(p => p.agentName === winner);
-            winningContent += `### Plan by ${winner}\n\n${plan?.content}\n\n---\n\n`;
+          const plan = currentPlans.find((p) => p.agentName === winner);
+          winningContent += `### Plan by ${winner}\n\n${plan?.content}\n\n---\n\n`;
         }
       }
 
       fs.writeFileSync(winningPlanFile, winningContent);
 
-      context.ui.addItem({
-        type: MessageType.INFO,
-        text: `Session Complete.\nTranscript saved to: ${transcriptFile}\nWinning Plan saved to: ${winningPlanFile}`,
-      }, Date.now());
-
+      context.ui.addItem(
+        {
+          type: MessageType.INFO,
+          text: `Session Complete.\nTranscript saved to: ${transcriptFile}\nWinning Plan saved to: ${winningPlanFile}`,
+        },
+        Date.now(),
+      );
     } catch (e) {
       return {
         type: 'message',
