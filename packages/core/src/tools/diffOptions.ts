@@ -7,22 +7,100 @@
 import * as Diff from 'diff';
 import type { DiffStat } from './tools.js';
 
-const DEFAULT_STRUCTURED_PATCH_OPTS: Diff.StructuredPatchOptionsNonabortable = {
+/**
+ * Strict interface for Diff Options.
+ * Extends the underlying diff library options but enforces Readonly for immutability.
+ */
+export interface DiffOptions
+  extends Readonly<Diff.CreatePatchOptionsNonabortable> {
+  /**
+   * The number of lines of context to include in the patch.
+   * Must be a non-negative integer.
+   */
+  readonly context?: number;
+
+  /**
+   * Whether to ignore whitespace changes.
+   */
+  readonly ignoreWhitespace?: boolean;
+}
+
+/**
+ * Validated and normalized options.
+ * Guarantees that core properties like context and ignoreWhitespace are set.
+ */
+export type NormalizedDiffOptions = DiffOptions & {
+  readonly context: number;
+  readonly ignoreWhitespace: boolean;
+};
+
+/**
+ * Default options used for diff operations.
+ */
+export const DEFAULT_DIFF_OPTIONS: DiffOptions = {
   context: 3,
   ignoreWhitespace: false,
 };
 
-export const DEFAULT_DIFF_OPTIONS: Diff.CreatePatchOptionsNonabortable = {
-  context: 3,
-  ignoreWhitespace: false,
-};
+/**
+ * Normalizes and validates partial diff options against defaults.
+ *
+ * @param options - The partial options provided by the user/caller.
+ * @returns A fully populated, readonly DiffOptions object.
+ * @throws Error if validation fails (e.g. negative context).
+ */
+export function normalizeDiffOptions(
+  options?: Partial<DiffOptions>,
+): NormalizedDiffOptions {
+  const context = options?.context ?? DEFAULT_DIFF_OPTIONS.context ?? 3;
+  const ignoreWhitespace = !!(
+    options?.ignoreWhitespace ??
+    DEFAULT_DIFF_OPTIONS.ignoreWhitespace ??
+    false
+  );
 
+  const merged: NormalizedDiffOptions = {
+    ...options,
+    context,
+    ignoreWhitespace,
+  };
+
+  // Runtime Validation
+  if (merged.context < 0) {
+    throw new Error(
+      `Diff context must be non-negative. Received: ${merged.context}`,
+    );
+  }
+
+  return Object.freeze(merged);
+}
+
+/**
+ * Calculates statistics about the differences between strings.
+ *
+ * @param fileName - The name of the file being diffed.
+ * @param oldStr - The original content.
+ * @param aiStr - The content proposed by the AI.
+ * @param userStr - The content as modified by the user (or the same as aiStr).
+ * @param options - Optional DiffOptions to control the diff algorithm.
+ * @returns DiffStat object with added/removed lines and chars.
+ */
 export function getDiffStat(
   fileName: string,
   oldStr: string,
   aiStr: string,
   userStr: string,
+  options?: DiffOptions,
 ): DiffStat {
+  const normalizedOpts = normalizeDiffOptions(options);
+
+  // Adapt to StructuredPatchOptions
+  // structuredPatch expects context and ignoreWhitespace.
+  const patchOpts: Diff.StructuredPatchOptionsNonabortable = {
+    context: normalizedOpts.context,
+    ignoreWhitespace: normalizedOpts.ignoreWhitespace,
+  };
+
   const getStats = (patch: Diff.StructuredPatch) => {
     let addedLines = 0;
     let removedLines = 0;
@@ -50,7 +128,7 @@ export function getDiffStat(
     aiStr,
     'Current',
     'Proposed',
-    DEFAULT_STRUCTURED_PATCH_OPTS,
+    patchOpts,
   );
   const modelStats = getStats(modelPatch);
 
@@ -61,7 +139,7 @@ export function getDiffStat(
     userStr,
     'Proposed',
     'User',
-    DEFAULT_STRUCTURED_PATCH_OPTS,
+    patchOpts,
   );
   const userStats = getStats(userPatch);
 

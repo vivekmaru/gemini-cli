@@ -5,7 +5,49 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { getDiffStat } from './diffOptions.js';
+import {
+  getDiffStat,
+  normalizeDiffOptions,
+  DEFAULT_DIFF_OPTIONS,
+} from './diffOptions.js';
+
+describe('normalizeDiffOptions', () => {
+  it('should return default options when input is undefined', () => {
+    const result = normalizeDiffOptions();
+    expect(result).toEqual(
+      expect.objectContaining({
+        context: 3,
+        ignoreWhitespace: false,
+      }),
+    );
+  });
+
+  it('should override defaults with valid inputs', () => {
+    const result = normalizeDiffOptions({
+      context: 10,
+      ignoreWhitespace: true,
+    });
+    expect(result.context).toBe(10);
+    expect(result.ignoreWhitespace).toBe(true);
+  });
+
+  it('should validate context is non-negative', () => {
+    expect(() => normalizeDiffOptions({ context: -1 })).toThrowError(
+      'Diff context must be non-negative',
+    );
+  });
+
+  it('should handle partial inputs', () => {
+    const result = normalizeDiffOptions({ ignoreWhitespace: true });
+    expect(result.ignoreWhitespace).toBe(true);
+    expect(result.context).toBe(DEFAULT_DIFF_OPTIONS.context);
+  });
+
+  it('should return an immutable object', () => {
+    const result = normalizeDiffOptions();
+    expect(Object.isFrozen(result)).toBe(true);
+  });
+});
 
 describe('getDiffStat', () => {
   const fileName = 'test.txt';
@@ -162,6 +204,7 @@ describe('getDiffStat', () => {
       user_removed_chars: 0,
     });
   });
+
   it('should correctly report whitespace-only changes', () => {
     const fileName = 'test.py';
     const oldStr = 'def hello():\n print("world")';
@@ -173,6 +216,28 @@ describe('getDiffStat', () => {
       model_removed_lines: 1,
       model_added_chars: 18,
       model_removed_chars: 15,
+      user_added_lines: 0,
+      user_removed_lines: 0,
+      user_added_chars: 0,
+      user_removed_chars: 0,
+    });
+  });
+
+  it('should ignore whitespace when configured', () => {
+    const fileName = 'test.py';
+    const oldStr = 'def hello():\n print("world")';
+    const aiStr = 'def hello():\n    print("world")';
+    const userStr = aiStr;
+    const diffStat = getDiffStat(fileName, oldStr, aiStr, userStr, {
+      ignoreWhitespace: true,
+    });
+
+    // With ignoreWhitespace: true, there should be NO changes
+    expect(diffStat).toEqual({
+      model_added_lines: 0,
+      model_removed_lines: 0,
+      model_added_chars: 0,
+      model_removed_chars: 0,
       user_added_lines: 0,
       user_removed_lines: 0,
       user_added_chars: 0,
