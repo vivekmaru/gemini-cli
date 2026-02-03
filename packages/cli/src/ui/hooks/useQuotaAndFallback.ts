@@ -98,8 +98,11 @@ export function useQuotaAndFallback({
         const messageLines = [
           `We are currently experiencing high demand.`,
           'We apologize and appreciate your patience.',
+          error instanceof Error && error.message
+            ? `Reason: ${error.message}`
+            : null, // Display actual error message
           '/model to switch models.',
-        ];
+        ].filter(Boolean);
         message = messageLines.join('\n');
       }
 
