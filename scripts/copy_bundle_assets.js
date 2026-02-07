@@ -73,4 +73,15 @@ if (existsSync(builtinSkillsSrc)) {
   console.log('Copied built-in skills to bundle/builtin/');
 }
 
+// 5. Copy Prompts (packages/cli/src/prompts)
+const promptsSrc = join(root, 'packages/cli/src/prompts');
+const promptsDest = join(bundleDir, 'prompts');
+if (existsSync(promptsSrc)) {
+  cpSync(promptsSrc, promptsDest, {
+    recursive: true,
+    dereference: true,
+  });
+  console.log('Copied prompts to bundle/prompts/');
+}
+
 console.log('Assets copied to bundle/');

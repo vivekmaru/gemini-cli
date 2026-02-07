@@ -26,10 +26,123 @@ import { CommandKind } from './types.js';
 import { MessageType } from '../types.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+interface PersonaDefinition {
+  id: string;
+  name: string;
+  description: string;
+  expertise: string[];
+  focus_areas: string[];
+  tone: string;
+}
 
 interface Persona {
   name: string;
   description: string;
+  id?: string;
+}
+
+interface PromptTemplate {
+  template: string;
+  persona_specific?: Record<string, string>;
+  output_format?: string;
+}
+
+interface PromptsData {
+  initial_proposal: PromptTemplate;
+  refinement: PromptTemplate;
+  validation: PromptTemplate;
+  synthesis: PromptTemplate;
+  universal_rules: string;
+  output_format: {
+    standard: string;
+    synthesis: string;
+  };
+}
+
+interface PersonasData {
+  personas: PersonaDefinition[];
+}
+
+// Prompt loading functions
+let promptsCache: PromptsData | null = null;
+let personasCache: PersonasData | null = null;
+
+function loadPrompts(): PromptsData {
+  if (promptsCache) return promptsCache;
+
+  const promptsPath = path.join(
+    __dirname,
+    '..',
+    '..',
+    'prompts',
+    'plan-prompts.json',
+  );
+  try {
+    const data = fs.readFileSync(promptsPath, 'utf-8');
+    promptsCache = JSON.parse(data) as PromptsData;
+    return promptsCache;
+  } catch {
+    throw new Error('Could not load plan prompts configuration');
+  }
+}
+
+function loadPersonas(): PersonasData {
+  if (personasCache) return personasCache;
+
+  const personasPath = path.join(
+    __dirname,
+    '..',
+    '..',
+    'prompts',
+    'personas.json',
+  );
+  try {
+    const data = fs.readFileSync(personasPath, 'utf-8');
+    personasCache = JSON.parse(data) as PersonasData;
+    return personasCache;
+  } catch {
+    throw new Error('Could not load personas configuration');
+  }
+}
+
+function getPersonaByName(name: string): PersonaDefinition | undefined {
+  const personas = loadPersonas();
+  // Try exact match first
+  let persona = personas.personas.find((p) => p.name === name);
+  // Try case-insensitive match
+  if (!persona) {
+    persona = personas.personas.find(
+      (p) => p.name.toLowerCase() === name.toLowerCase(),
+    );
+  }
+  // Try partial match
+  if (!persona) {
+    persona = personas.personas.find(
+      (p) =>
+        name.toLowerCase().includes(p.id.toLowerCase()) ||
+        p.id.toLowerCase().includes(name.toLowerCase().replace(/\s+/g, '-')),
+    );
+  }
+  return persona;
+}
+
+function buildPrompt(
+  template: string,
+  variables: Record<string, string>,
+): string {
+  let result = template;
+  for (const [key, value] of Object.entries(variables)) {
+    const regex = new RegExp(`{{${key}}}`, 'g');
+    result = result.replace(regex, value);
+  }
+  // Remove any remaining template variables
+  result = result.replace(/{{[^}]+}}/g, '');
+  return result;
 }
 
 interface Plan {
@@ -187,6 +300,38 @@ async function generatePersonas(
   count: number,
   config: Config,
 ): Promise<Persona[]> {
+  // Load predefined personas from JSON file
+  const personasPath = path.join(
+    __dirname,
+    '..',
+    '..',
+    'prompts',
+    'personas.json',
+  );
+  let predefinedPersonas: PersonaDefinition[] = [];
+
+  try {
+    const data = fs.readFileSync(personasPath, 'utf-8');
+    const parsed = JSON.parse(data) as { personas: PersonaDefinition[] };
+    predefinedPersonas = parsed.personas;
+  } catch {
+    // Failed to load predefined personas, will fall back to AI generation
+  }
+
+  // If we have predefined personas, use them
+  if (predefinedPersonas.length > 0) {
+    // Shuffle and take the requested number
+    const shuffled = [...predefinedPersonas].sort(() => Math.random() - 0.5);
+    const selected = shuffled.slice(0, Math.min(count, shuffled.length));
+
+    return selected.map((p) => ({
+      name: p.name,
+      description: p.description,
+      id: p.id,
+    }));
+  }
+
+  // Fallback to AI-generated personas
   const chat = new GeminiChat(
     config,
     'You are an expert team builder. Your goal is to create diverse, capable personas to solve a specific problem.',
@@ -228,7 +373,7 @@ async function generatePersonas(
     return parsed;
   }
 
-  // Fallback if parsing fails - create generic personas
+  // Ultimate fallback - create generic personas
   return Array.from({ length: count }, (_, i) => ({
     name: `Agent_${i + 1}`,
     description: `An expert agent focused on aspect ${i + 1} of the problem.`,
@@ -298,10 +443,19 @@ export const planCommand: SlashCommand = {
     agentCount = Math.max(1, Math.min(6, agentCount));
     rounds = Math.max(0, Math.min(5, rounds));
 
+    const sessionStartTime = Date.now();
+
+    // Visual header
     context.ui.addItem(
       {
         type: MessageType.INFO,
-        text: `Starting planning session for: "${query}"\nAgents: ${agentCount}, Rounds: ${rounds}`,
+        text: `
+╔════════════════════════════════════════════════════════════════╗
+║  🤖 MULTI-AGENT PLANNING SESSION                               ║
+╚════════════════════════════════════════════════════════════════╝
+📋 Problem: "${query}"
+👥 Agents: ${agentCount}  🔄 Review Rounds: ${rounds}
+`,
       },
       Date.now(),
     );
@@ -309,19 +463,54 @@ export const planCommand: SlashCommand = {
     let transcript = `# Planning Session Transcript\n\n## Problem Statement\n${query}\n\n`;
 
     try {
+      // Helper function for phase headers
+      const showPhaseHeader = (phase: string, subtext?: string) => {
+        const header = `
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃  ${phase.padEnd(58)} ┃
+${subtext ? `┃  ${subtext.padEnd(58)} ┃` : ''}
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛`;
+        context.ui.addItem(
+          { type: MessageType.INFO, text: header },
+          Date.now(),
+        );
+      };
+
       // 1. Generate Personas
+      showPhaseHeader(
+        '🎭 PHASE 0: TEAM ASSEMBLY',
+        'Selecting expert personas...',
+      );
       context.ui.addItem(
-        { type: MessageType.INFO, text: 'Generating personas...' },
+        { type: MessageType.INFO, text: '⏳ Generating personas...' },
         Date.now(),
       );
       const personas = await generatePersonas(query, agentCount, config);
 
-      const personaText = personas
-        .map((p) => `- **${p.name}**: ${p.description}`)
-        .join('\n');
-      transcript += `## Personas\n${personaText}\n\n`;
+      // Display team with icons
+      const personaIcons: Record<string, string> = {
+        'product-manager': '📊',
+        'tech-lead': '🔧',
+        'senior-engineer': '💻',
+        architect: '🏗️',
+        'ux-designer': '🎨',
+        'end-user': '👤',
+      };
+
+      const personaDisplay = personas
+        .map((p) => {
+          const personaDef = getPersonaByName(p.name);
+          const icon = personaDef ? personaIcons[personaDef.id] || '🤖' : '🤖';
+          return `${icon} **${p.name}**\n   ${p.description}`;
+        })
+        .join('\n\n');
+
+      transcript += `## Personas\n${personas.map((p) => `- **${p.name}**: ${p.description}`).join('\n')}\n\n`;
       context.ui.addItem(
-        { type: MessageType.INFO, text: `Personas created:\n${personaText}` },
+        {
+          type: MessageType.INFO,
+          text: `✅ Team assembled:\n\n${personaDisplay}`,
+        },
         Date.now(),
       );
 
@@ -337,67 +526,85 @@ export const planCommand: SlashCommand = {
       );
 
       // 3. Proposal Round
-      context.ui.addItem(
-        { type: MessageType.INFO, text: 'Phase 1: Initial Proposals' },
-        Date.now(),
+      showPhaseHeader(
+        '📝 PHASE 1: INITIAL PROPOSALS',
+        `${agents.length} agents creating plans...`,
       );
       transcript += `## Phase 1: Initial Proposals\n\n`;
 
       let currentPlans: Plan[] = [];
 
+      // Load prompt templates
+      const prompts = loadPrompts();
+
       // Run sequentially to avoid rate limits
       for (const agent of agents) {
-        const prompt = `The user has the following problem: "${query}".
+        // Get persona-specific instructions
+        const persona = getPersonaByName(agent.name);
+        const personaId = persona?.id || 'generic';
+        const personaSpecificInstructions =
+          prompts.initial_proposal.persona_specific?.[personaId] ||
+          'Create a comprehensive plan addressing all aspects of the problem from your expert perspective.';
 
-Based on your expertise, propose a detailed plan to solve this.
+        // Build the prompt using the template
+        const prompt = buildPrompt(prompts.initial_proposal.template, {
+          'persona.name': agent.name,
+          'persona.description': agent.description,
+          'persona.expertise':
+            persona?.expertise?.join(', ') || 'general problem solving',
+          'persona.focus_areas':
+            persona?.focus_areas?.join(', ') || 'comprehensive solution',
+          'persona.tone': persona?.tone || 'professional',
+          query,
+          persona_specific_instructions: personaSpecificInstructions,
+          universal_rules: prompts.universal_rules,
+          output_format: prompts.output_format.standard,
+        });
 
-CRITICAL INSTRUCTIONS:
-1. DO NOT include your internal thinking process, reasoning, or decision-making steps
-2. DO NOT use phrases like "I'm analyzing", "I'm considering", "I've decided", "I think", "I believe"
-3. DO NOT include meta-commentary about the planning process itself
-4. Output ONLY the final plan content in a clean, professional format
+        const planStartTime = Date.now();
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `⏳ ${agent.name} is creating a plan...`,
+          },
+          Date.now(),
+        );
 
-Structure your plan with these sections (use markdown headers):
-
-## Overview
-Brief summary of the approach and key objectives.
-
-## Product Features
-List concrete features with brief descriptions. Include user stories where relevant.
-
-## Technology Stack
-Specify technologies, frameworks, and tools with rationale.
-
-## UI/UX Design
-Describe the user interface, key screens, and user experience flow.
-
-## Implementation Phases
-Break down into phases with specific deliverables and timelines.
-
-## Success Metrics
-Define how to measure the success of this plan.
-
-Be specific, actionable, and comprehensive. Focus on deliverables and outcomes, not your thought process.`;
         const planContent = await agent.generate(prompt);
+        const planDuration = ((Date.now() - planStartTime) / 1000).toFixed(1);
         currentPlans.push({ agentName: agent.name, content: planContent });
+
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `✅ ${agent.name} completed plan (${planDuration}s) - ${planContent.split(' ').length} words`,
+          },
+          Date.now(),
+        );
 
         // Brief pause between agents
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
 
+      // Show completion of Phase 1
+      context.ui.addItem(
+        {
+          type: MessageType.INFO,
+          text: `\n📊 Phase 1 Complete: ${currentPlans.length} plans created`,
+        },
+        Date.now(),
+      );
+
       for (const plan of currentPlans) {
         transcript += `### ${plan.agentName}'s Proposal\n${plan.content}\n\n`;
-        context.ui.addItem(
-          {
-            type: MessageType.INFO,
-            text: `**${plan.agentName}** has proposed a plan.`,
-          },
-          Date.now(),
-        );
       }
 
       // 4. Review Rounds
       for (let r = 1; r <= rounds; r++) {
+        showPhaseHeader(
+          `🔄 PHASE 2: REVIEW ROUND ${r}/${rounds}`,
+          'Agents refining plans based on peer feedback...',
+        );
         context.ui.addItem(
           {
             type: MessageType.INFO,
@@ -414,45 +621,46 @@ Be specific, actionable, and comprehensive. Focus on deliverables and outcomes, 
         const nextRoundPlans: Plan[] = [];
 
         // Run sequentially
-        for (const agent of agents) {
-          const prompt = `
-Here are the current plans proposed by the team:
-${allPlansText}
+        for (let i = 0; i < agents.length; i++) {
+          const agent = agents[i];
+          context.ui.addItem(
+            {
+              type: MessageType.INFO,
+              text: `⏳ [${i + 1}/${agents.length}] ${agent.name} is refining their plan...`,
+            },
+            Date.now(),
+          );
 
-Your task: Provide an UPDATED, refined version of your plan based on the feedback and ideas from other plans.
+          // Get persona-specific instructions for refinement
+          const persona = getPersonaByName(agent.name);
+          const personaId = persona?.id || 'generic';
+          const personaSpecificInstructions =
+            prompts.refinement.persona_specific?.[personaId] ||
+            'Improve your plan by incorporating the best ideas from other plans while maintaining your unique perspective.';
 
-CRITICAL INSTRUCTIONS:
-1. DO NOT include your internal thinking process, reasoning, or decision-making steps
-2. DO NOT use phrases like "I'm analyzing", "I'm considering", "I've decided", "I think", "I believe"
-3. DO NOT include meta-commentary about the planning process or critiques of other plans
-4. Output ONLY the final refined plan content
+          // Build the refinement prompt using the template
+          const prompt = buildPrompt(prompts.refinement.template, {
+            'persona.name': agent.name,
+            'persona.description': agent.description,
+            all_plans: allPlansText,
+            persona_specific_instructions: personaSpecificInstructions,
+            universal_rules: prompts.universal_rules,
+            output_format: prompts.output_format.standard,
+          });
 
-Structure your refined plan with these sections (use markdown headers):
-
-## Overview
-Brief summary of the approach and key objectives.
-
-## Product Features
-List concrete features with brief descriptions. Include user stories where relevant.
-
-## Technology Stack
-Specify technologies, frameworks, and tools with rationale.
-
-## UI/UX Design
-Describe the user interface, key screens, and user experience flow.
-
-## Implementation Phases
-Break down into phases with specific deliverables and timelines.
-
-## Success Metrics
-Define how to measure the success of this plan.
-
-Incorporate the best ideas from other plans while maintaining your unique perspective. Be specific, actionable, and comprehensive. Focus on deliverables and outcomes.`;
           const refinedContent = await agent.generate(prompt);
           nextRoundPlans.push({
             agentName: agent.name,
             content: refinedContent,
           });
+
+          context.ui.addItem(
+            {
+              type: MessageType.INFO,
+              text: `✅ ${agent.name} completed refinement`,
+            },
+            Date.now(),
+          );
 
           // Brief pause
           await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -462,62 +670,76 @@ Incorporate the best ideas from other plans while maintaining your unique perspe
 
         for (const plan of currentPlans) {
           transcript += `### ${plan.agentName}'s Refined Plan (Round ${r})\n${plan.content}\n\n`;
-          context.ui.addItem(
-            {
-              type: MessageType.INFO,
-              text: `**${plan.agentName}** has refined their plan.`,
-            },
-            Date.now(),
-          );
         }
+
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `\n📊 Round ${r} Complete: ${currentPlans.length} plans refined`,
+          },
+          Date.now(),
+        );
       }
 
       // 5. Quality Validation Round
-      context.ui.addItem(
-        { type: MessageType.INFO, text: 'Phase 3: Quality Validation' },
-        Date.now(),
+      showPhaseHeader(
+        '✅ PHASE 3: QUALITY VALIDATION',
+        'Agents reviewing and improving their plans...',
       );
       transcript += `## Phase 3: Quality Validation\n\n`;
 
-      const plansForValidation = currentPlans
-        .map((p) => `Plan from ${p.agentName}:\n${p.content}\n---`)
-        .join('\n');
-
       const validatedPlans: Plan[] = [];
 
-      for (const agent of agents) {
-        const validationPrompt = `
-You are reviewing plans to ensure they properly address the user's request: "${query}"
+      for (let i = 0; i < agents.length; i++) {
+        const agent = agents[i];
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `⏳ [${i + 1}/${agents.length}] ${agent.name} is validating their plan...`,
+          },
+          Date.now(),
+        );
 
-Here are the current plans:
-${plansForValidation}
+        // Get persona-specific instructions for validation
+        const persona = getPersonaByName(agent.name);
+        const personaId = persona?.id || 'generic';
+        const personaSpecificInstructions =
+          prompts.validation.persona_specific?.[personaId] ||
+          'Validate and improve your plan by checking completeness and addressing any gaps.';
 
-Your task: Review your own plan and verify it comprehensively addresses the user's request.
+        // Get the agent's own plan
+        const ownPlan =
+          currentPlans.find((p) => p.agentName === agent.name)?.content || '';
+        const otherPlans = currentPlans
+          .filter((p) => p.agentName !== agent.name)
+          .map((p) => `Plan from ${p.agentName}:\n${p.content}`)
+          .join('\n---\n');
 
-CRITICAL INSTRUCTIONS:
-1. Check if the plan covers all aspects mentioned in the user's request
-2. Identify any gaps or missing elements
-3. If the plan is incomplete or lacks detail, EXPAND it significantly
-4. Ensure the plan is specific and actionable, not vague or high-level
-5. DO NOT include your internal thinking process or meta-commentary
-6. Output ONLY the final validated and potentially expanded plan
-
-Structure your validated plan with these sections:
-
-## Overview
-## Product Features
-## Technology Stack
-## UI/UX Design
-## Implementation Phases
-## Success Metrics
-
-Make sure your plan is thorough and complete.`;
+        // Build the validation prompt using the template
+        const validationPrompt = buildPrompt(prompts.validation.template, {
+          'persona.name': agent.name,
+          'persona.description': agent.description,
+          query,
+          own_plan: ownPlan,
+          other_plans: otherPlans,
+          persona_specific_instructions: personaSpecificInstructions,
+          universal_rules: prompts.universal_rules,
+          output_format: prompts.output_format.standard,
+        });
 
         const validatedContent = await agent.generate(validationPrompt);
         validatedPlans.push({
           agentName: agent.name,
           content: validatedContent,
         });
+
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `✅ ${agent.name} completed validation`,
+          },
+          Date.now(),
+        );
 
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -526,19 +748,20 @@ Make sure your plan is thorough and complete.`;
 
       for (const plan of currentPlans) {
         transcript += `### ${plan.agentName}'s Validated Plan\n${plan.content}\n\n`;
-        context.ui.addItem(
-          {
-            type: MessageType.INFO,
-            text: `**${plan.agentName}** has validated their plan.`,
-          },
-          Date.now(),
-        );
       }
 
-      // 6. Synthesis Phase - Create a unified plan from the best elements
       context.ui.addItem(
-        { type: MessageType.INFO, text: 'Phase 4: Synthesis' },
+        {
+          type: MessageType.INFO,
+          text: `\n📊 Phase 3 Complete: ${currentPlans.length} plans validated`,
+        },
         Date.now(),
+      );
+
+      // 6. Synthesis Phase - Create a unified plan from the best elements
+      showPhaseHeader(
+        '🔮 PHASE 4: SYNTHESIS',
+        'Creating unified plan from the best elements...',
       );
       transcript += `## Phase 4: Synthesis\n\n`;
 
@@ -546,47 +769,13 @@ Make sure your plan is thorough and complete.`;
         .map((p) => `Plan from ${p.agentName}:\n${p.content}\n---`)
         .join('\n');
 
-      const synthesizerPrompt = `
-You are a master synthesizer. Your task is to create the ultimate plan by combining the best elements from all the plans below.
-
-User's original request: "${query}"
-
-All validated plans:
-${allValidatedPlans}
-
-CRITICAL INSTRUCTIONS:
-1. Analyze all plans and identify the strongest elements from each
-2. Create a single, comprehensive, unified plan that incorporates the best ideas
-3. Resolve any contradictions or conflicts between plans
-4. Fill in any gaps that exist across all plans
-5. DO NOT include your internal thinking process or meta-commentary
-6. DO NOT mention which plan an idea came from - just present the unified plan
-7. Output ONLY the final synthesized plan
-
-Structure your synthesized plan with these sections:
-
-## Overview
-Brief summary of the unified approach.
-
-## Product Features
-Comprehensive list of features combining the best ideas from all plans.
-
-## Technology Stack
-Optimal technology choices with clear rationale.
-
-## UI/UX Design
-Complete user interface and experience design.
-
-## Implementation Phases
-Detailed phases with specific deliverables and realistic timelines.
-
-## Success Metrics
-Clear, measurable success criteria.
-
-## Risk Mitigation
-Key risks and how to address them.
-
-Create a plan that is better than any individual plan - a true synthesis of excellence.`;
+      // Build the synthesis prompt using the template
+      const synthesizerPrompt = buildPrompt(prompts.synthesis.template, {
+        query,
+        all_plans: allValidatedPlans,
+        universal_rules: prompts.universal_rules,
+        output_format: prompts.output_format.synthesis,
+      });
 
       const synthesisAgent = new PlanAgent(
         'Synthesizer',
@@ -699,20 +888,46 @@ Create a plan that is better than any individual plan - a true synthesis of exce
       transcript += `\n## Result\n`;
       let finalWinnerName = '';
 
+      // Visual voting results
+      const totalVotes = votes.length;
+      const maxBarLength = 40;
+      const sortedResults = Object.entries(voteCounts).sort(
+        (a, b) => b[1] - a[1],
+      );
+
+      let voteVisualization = '\n📊 VOTING RESULTS:\n';
+      voteVisualization += '═'.repeat(50) + '\n';
+
+      for (const [agentName, count] of sortedResults) {
+        const percentage = ((count / totalVotes) * 100).toFixed(0);
+        const barLength = Math.round((count / maxVotes) * maxBarLength);
+        const bar =
+          '█'.repeat(barLength) + '░'.repeat(maxBarLength - barLength);
+        const isWinner = winners.includes(agentName);
+        const winnerIcon = isWinner ? '👑 ' : '   ';
+        voteVisualization += `${winnerIcon}${agentName.padEnd(20)} ${bar} ${count}/${totalVotes} (${percentage}%)\n`;
+      }
+
+      voteVisualization += '═'.repeat(50) + '\n';
+
       if (winners.length === 1) {
         finalWinnerName = winners[0];
         transcript += `Winner: **${finalWinnerName}** with ${maxVotes} votes.\n`;
+        voteVisualization += `\n🎉 WINNER: ${finalWinnerName}\n`;
+        voteVisualization += `   ${maxVotes}/${totalVotes} votes (${((maxVotes / totalVotes) * 100).toFixed(0)}% consensus)\n`;
         context.ui.addItem(
-          { type: MessageType.INFO, text: `Winner: ${finalWinnerName}` },
+          { type: MessageType.INFO, text: voteVisualization },
           Date.now(),
         );
       } else {
         // Tie
         transcript += `Tie between: ${winners.join(', ')} with ${maxVotes} votes each.\n`;
+        voteVisualization += `\n⚖️  TIE between: ${winners.join(' & ')}\n`;
+        voteVisualization += `   ${maxVotes} votes each\n`;
         context.ui.addItem(
           {
             type: MessageType.WARNING,
-            text: `Tie between: ${winners.join(', ')}. Please review the winning plans.`,
+            text: voteVisualization,
           },
           Date.now(),
         );
@@ -761,10 +976,22 @@ Create a plan that is better than any individual plan - a true synthesis of exce
 
       fs.writeFileSync(winningPlanFile, winningContent);
 
+      const sessionDuration = ((Date.now() - sessionStartTime) / 1000).toFixed(
+        1,
+      );
+
+      // Visual completion summary
       context.ui.addItem(
         {
           type: MessageType.INFO,
-          text: `Session Complete.\nTranscript saved to: ${transcriptFile}\nWinning Plan saved to: ${winningPlanFile}`,
+          text: `
+╔════════════════════════════════════════════════════════════════╗
+║  ✅ SESSION COMPLETE                                           ║
+╚════════════════════════════════════════════════════════════════╝
+⏱️  Duration: ${sessionDuration}s
+📝 Transcript: ${transcriptFile}
+🏆 Winning Plan: ${winningPlanFile}
+`,
         },
         Date.now(),
       );
