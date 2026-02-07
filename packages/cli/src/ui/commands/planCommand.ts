@@ -347,7 +347,37 @@ export const planCommand: SlashCommand = {
 
       // Run sequentially to avoid rate limits
       for (const agent of agents) {
-        const prompt = `The user has the following problem: "${query}".\n\nBased on your expertise, propose a detailed plan to solve this. Structure it clearly.`;
+        const prompt = `The user has the following problem: "${query}".
+
+Based on your expertise, propose a detailed plan to solve this.
+
+CRITICAL INSTRUCTIONS:
+1. DO NOT include your internal thinking process, reasoning, or decision-making steps
+2. DO NOT use phrases like "I'm analyzing", "I'm considering", "I've decided", "I think", "I believe"
+3. DO NOT include meta-commentary about the planning process itself
+4. Output ONLY the final plan content in a clean, professional format
+
+Structure your plan with these sections (use markdown headers):
+
+## Overview
+Brief summary of the approach and key objectives.
+
+## Product Features
+List concrete features with brief descriptions. Include user stories where relevant.
+
+## Technology Stack
+Specify technologies, frameworks, and tools with rationale.
+
+## UI/UX Design
+Describe the user interface, key screens, and user experience flow.
+
+## Implementation Phases
+Break down into phases with specific deliverables and timelines.
+
+## Success Metrics
+Define how to measure the success of this plan.
+
+Be specific, actionable, and comprehensive. Focus on deliverables and outcomes, not your thought process.`;
         const planContent = await agent.generate(prompt);
         currentPlans.push({ agentName: agent.name, content: planContent });
 
@@ -386,12 +416,38 @@ export const planCommand: SlashCommand = {
         // Run sequentially
         for (const agent of agents) {
           const prompt = `
-            Here are the current plans proposed by the team:
-            ${allPlansText}
+Here are the current plans proposed by the team:
+${allPlansText}
 
-            Critique the other plans and then provide an UPDATED, refined version of your own plan (or adopt a better one) based on the feedback and ideas you see.
-            Make your new plan comprehensive.
-          `;
+Your task: Provide an UPDATED, refined version of your plan based on the feedback and ideas from other plans.
+
+CRITICAL INSTRUCTIONS:
+1. DO NOT include your internal thinking process, reasoning, or decision-making steps
+2. DO NOT use phrases like "I'm analyzing", "I'm considering", "I've decided", "I think", "I believe"
+3. DO NOT include meta-commentary about the planning process or critiques of other plans
+4. Output ONLY the final refined plan content
+
+Structure your refined plan with these sections (use markdown headers):
+
+## Overview
+Brief summary of the approach and key objectives.
+
+## Product Features
+List concrete features with brief descriptions. Include user stories where relevant.
+
+## Technology Stack
+Specify technologies, frameworks, and tools with rationale.
+
+## UI/UX Design
+Describe the user interface, key screens, and user experience flow.
+
+## Implementation Phases
+Break down into phases with specific deliverables and timelines.
+
+## Success Metrics
+Define how to measure the success of this plan.
+
+Incorporate the best ideas from other plans while maintaining your unique perspective. Be specific, actionable, and comprehensive. Focus on deliverables and outcomes.`;
           const refinedContent = await agent.generate(prompt);
           nextRoundPlans.push({
             agentName: agent.name,
@@ -416,14 +472,155 @@ export const planCommand: SlashCommand = {
         }
       }
 
-      // 5. Voting
+      // 5. Quality Validation Round
       context.ui.addItem(
-        { type: MessageType.INFO, text: 'Phase 3: Voting' },
+        { type: MessageType.INFO, text: 'Phase 3: Quality Validation' },
         Date.now(),
       );
-      transcript += `## Phase 3: Voting\n\n`;
+      transcript += `## Phase 3: Quality Validation\n\n`;
 
-      const finalPlansText = currentPlans
+      const plansForValidation = currentPlans
+        .map((p) => `Plan from ${p.agentName}:\n${p.content}\n---`)
+        .join('\n');
+
+      const validatedPlans: Plan[] = [];
+
+      for (const agent of agents) {
+        const validationPrompt = `
+You are reviewing plans to ensure they properly address the user's request: "${query}"
+
+Here are the current plans:
+${plansForValidation}
+
+Your task: Review your own plan and verify it comprehensively addresses the user's request.
+
+CRITICAL INSTRUCTIONS:
+1. Check if the plan covers all aspects mentioned in the user's request
+2. Identify any gaps or missing elements
+3. If the plan is incomplete or lacks detail, EXPAND it significantly
+4. Ensure the plan is specific and actionable, not vague or high-level
+5. DO NOT include your internal thinking process or meta-commentary
+6. Output ONLY the final validated and potentially expanded plan
+
+Structure your validated plan with these sections:
+
+## Overview
+## Product Features
+## Technology Stack
+## UI/UX Design
+## Implementation Phases
+## Success Metrics
+
+Make sure your plan is thorough and complete.`;
+
+        const validatedContent = await agent.generate(validationPrompt);
+        validatedPlans.push({
+          agentName: agent.name,
+          content: validatedContent,
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      currentPlans = validatedPlans;
+
+      for (const plan of currentPlans) {
+        transcript += `### ${plan.agentName}'s Validated Plan\n${plan.content}\n\n`;
+        context.ui.addItem(
+          {
+            type: MessageType.INFO,
+            text: `**${plan.agentName}** has validated their plan.`,
+          },
+          Date.now(),
+        );
+      }
+
+      // 6. Synthesis Phase - Create a unified plan from the best elements
+      context.ui.addItem(
+        { type: MessageType.INFO, text: 'Phase 4: Synthesis' },
+        Date.now(),
+      );
+      transcript += `## Phase 4: Synthesis\n\n`;
+
+      const allValidatedPlans = currentPlans
+        .map((p) => `Plan from ${p.agentName}:\n${p.content}\n---`)
+        .join('\n');
+
+      const synthesizerPrompt = `
+You are a master synthesizer. Your task is to create the ultimate plan by combining the best elements from all the plans below.
+
+User's original request: "${query}"
+
+All validated plans:
+${allValidatedPlans}
+
+CRITICAL INSTRUCTIONS:
+1. Analyze all plans and identify the strongest elements from each
+2. Create a single, comprehensive, unified plan that incorporates the best ideas
+3. Resolve any contradictions or conflicts between plans
+4. Fill in any gaps that exist across all plans
+5. DO NOT include your internal thinking process or meta-commentary
+6. DO NOT mention which plan an idea came from - just present the unified plan
+7. Output ONLY the final synthesized plan
+
+Structure your synthesized plan with these sections:
+
+## Overview
+Brief summary of the unified approach.
+
+## Product Features
+Comprehensive list of features combining the best ideas from all plans.
+
+## Technology Stack
+Optimal technology choices with clear rationale.
+
+## UI/UX Design
+Complete user interface and experience design.
+
+## Implementation Phases
+Detailed phases with specific deliverables and realistic timelines.
+
+## Success Metrics
+Clear, measurable success criteria.
+
+## Risk Mitigation
+Key risks and how to address them.
+
+Create a plan that is better than any individual plan - a true synthesis of excellence.`;
+
+      const synthesisAgent = new PlanAgent(
+        'Synthesizer',
+        'Master plan synthesizer who creates unified plans from multiple perspectives',
+        config,
+        (msg: string) =>
+          context.ui.addItem({ type: MessageType.INFO, text: msg }, Date.now()),
+      );
+
+      const synthesizedPlanContent =
+        await synthesisAgent.generate(synthesizerPrompt);
+      const synthesizedPlan: Plan = {
+        agentName: 'Synthesized Plan',
+        content: synthesizedPlanContent,
+      };
+
+      transcript += `### Synthesized Plan\n${synthesizedPlan.content}\n\n`;
+      context.ui.addItem(
+        {
+          type: MessageType.INFO,
+          text: '**Synthesizer** has created a unified plan combining the best elements.',
+        },
+        Date.now(),
+      );
+
+      // 7. Voting (now includes synthesized plan)
+      context.ui.addItem(
+        { type: MessageType.INFO, text: 'Phase 5: Voting' },
+        Date.now(),
+      );
+      transcript += `## Phase 5: Voting\n\n`;
+
+      const finalPlansForVoting = [...currentPlans, synthesizedPlan];
+      const finalPlansText = finalPlansForVoting
         .map((p) => `Plan from ${p.agentName}:\n${p.content}\n---`)
         .join('\n');
 
@@ -522,7 +719,7 @@ export const planCommand: SlashCommand = {
         finalWinnerName = 'TIE: ' + winners.join(' & ');
       }
 
-      // 6. Write Output
+      // 8. Write Output
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const transcriptFile = path.join(
         process.cwd(),
@@ -535,15 +732,30 @@ export const planCommand: SlashCommand = {
 
       fs.writeFileSync(transcriptFile, transcript);
 
-      let winningContent = `# Winning Plan(s)\n\nProblem: ${query}\n\n`;
+      let winningContent = `# Winning Plan\n\n**Problem:** ${query}\n\n`;
       if (winners.length === 1) {
-        const plan = currentPlans.find((p) => p.agentName === winners[0]);
-        winningContent += `## Author: ${plan?.agentName}\n\n${plan?.content}`;
+        const winnerName = winners[0];
+        let winningPlan: Plan | undefined;
+
+        if (winnerName === 'Synthesized Plan') {
+          winningPlan = synthesizedPlan;
+          winningContent += `> **Winner:** Unified Synthesized Plan (combining best elements from all agents)\n\n`;
+        } else {
+          winningPlan = currentPlans.find((p) => p.agentName === winnerName);
+          winningContent += `> **Winner:** ${winnerName}'s Plan\n\n`;
+        }
+
+        winningContent += `**Votes:** ${maxVotes}/${votes.length}\n\n---\n\n${winningPlan?.content}`;
       } else {
-        winningContent += `## TIE between ${winners.join(', ')}\n\n`;
+        winningContent += `> **Result:** Tie between ${winners.join(', ')}\n\n**Votes:** ${maxVotes} each\n\n---\n\n`;
         for (const winner of winners) {
-          const plan = currentPlans.find((p) => p.agentName === winner);
-          winningContent += `### Plan by ${winner}\n\n${plan?.content}\n\n---\n\n`;
+          let plan: Plan | undefined;
+          if (winner === 'Synthesized Plan') {
+            plan = synthesizedPlan;
+          } else {
+            plan = currentPlans.find((p) => p.agentName === winner);
+          }
+          winningContent += `## Plan by ${winner}\n\n${plan?.content}\n\n---\n\n`;
         }
       }
 
